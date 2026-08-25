@@ -233,7 +233,7 @@
     </button>
   </div>
   <div class="card aviso-box">
-    Resultados, en vivo y posiciones vienen de TheSportsDB (fuente comunitaria, key gratuita — el estado "en vivo" puede tener algunos minutos de demora y podría dejar de estar disponible sin aviso). Los goles en video todavía no están conectados — falta registrar un token gratis en Scorebat.
+    Resultados, en vivo, posiciones y estadísticas de temporada vienen de TheSportsDB (fuente comunitaria, key gratuita — el estado "en vivo" puede tener algunos minutos de demora y podría dejar de estar disponible sin aviso). En las ligas "todos contra todos" la tabla de posiciones se arma acá mismo con los resultados de la temporada (la tabla que da gratis la API viene recortada a 5 equipos); en copas de eliminación directa no hay una tabla única, así que se muestra el fixture. Buscá cualquier equipo del mundo desde "Buscar equipo" — no hace falta que su liga esté en la lista de arriba para ver su ficha, racha y gráfico de puntos. Los goles en video todavía no están conectados — falta registrar un token gratis en Scorebat.
   </div>
 </div>
 
@@ -290,15 +290,25 @@ function fmtHora(s){ if(!s) return ''; return s.slice(0,5); }
 // ═══════════════════════════════════════════════════════════════
 // LIGAS — IDs de TheSportsDB confirmados a mano (lookupleague.php)
 // ═══════════════════════════════════════════════════════════════
+// tipo:'liga' = todos contra todos (se puede armar una tabla de
+// posiciones completa a partir de los propios partidos de la
+// temporada). tipo:'copa' = eliminación directa/grupos+cruces (no
+// tiene una tabla única — se muestra fixture/resultados nomás).
 const LIGAS=[
-  {id:'4406', nombre:'Primera División Arg.', pais:'🇦🇷'},
-  {id:'4480', nombre:'Champions League', pais:'⭐'},
-  {id:'4328', nombre:'Premier League', pais:'🏴'},
-  {id:'4335', nombre:'La Liga', pais:'🇪🇸'},
-  {id:'4332', nombre:'Serie A', pais:'🇮🇹'},
-  {id:'4331', nombre:'Bundesliga', pais:'🇩🇪'},
-  {id:'4334', nombre:'Ligue 1', pais:'🇫🇷'},
-  {id:'4346', nombre:'MLS', pais:'🇺🇸'},
+  {id:'4406', nombre:'Primera División Arg.', pais:'🇦🇷', tipo:'liga'},
+  {id:'4616', nombre:'Primera Nacional', pais:'🇦🇷', tipo:'liga'},
+  {id:'4500', nombre:'Copa Argentina', pais:'🇦🇷', tipo:'copa'},
+  {id:'4501', nombre:'Copa Libertadores', pais:'🌎', tipo:'copa'},
+  {id:'4724', nombre:'Copa Sudamericana', pais:'🌎', tipo:'copa'},
+  {id:'4351', nombre:'Brasileirão', pais:'🇧🇷', tipo:'liga'},
+  {id:'4480', nombre:'Champions League', pais:'⭐', tipo:'copa'},
+  {id:'4481', nombre:'Europa League', pais:'⭐', tipo:'copa'},
+  {id:'4328', nombre:'Premier League', pais:'🏴', tipo:'liga'},
+  {id:'4335', nombre:'La Liga', pais:'🇪🇸', tipo:'liga'},
+  {id:'4332', nombre:'Serie A', pais:'🇮🇹', tipo:'liga'},
+  {id:'4331', nombre:'Bundesliga', pais:'🇩🇪', tipo:'liga'},
+  {id:'4334', nombre:'Ligue 1', pais:'🇫🇷', tipo:'liga'},
+  {id:'4346', nombre:'MLS', pais:'🇺🇸', tipo:'liga'},
 ];
 function ligaInfo(id){ return LIGAS.find(l=>l.id===id)||LIGAS[0]; }
 
@@ -352,6 +362,18 @@ function cerrarModal(id){
   document.getElementById('modal-'+id).classList.remove('open');
   if(!_poppingState) history.back();
 }
+// Pasar de un modal a otro (ej: tocar un equipo desde el modal de un
+// partido, o desde un resultado de búsqueda) sin pasar por
+// cerrarModal()+history.back() — eso corre en paralelo con el
+// pushState del modal nuevo y el popstate que llega de más tarde
+// termina cerrando el modal recién abierto. Acá cerramos el/los
+// modales visibles de una sola vez, sin tocar el historial, y dejamos
+// que abrirModal() (llamado dentro de la función de destino) haga el
+// único pushState de esta transición.
+function irAModal(fn){
+  document.querySelectorAll('.modal-overlay.open').forEach(m=>m.classList.remove('open'));
+  fn();
+}
 window.addEventListener('popstate', e=>{
   _poppingState=true;
   const abierto=document.querySelector('.modal-overlay.open');
@@ -365,9 +387,16 @@ window.addEventListener('popstate', e=>{
 });
 
 // ═══════════════════════════════════════════════════════════════
-// DATOS — TheSportsDB (key pública de test '3', CORS abierto, sin backend)
+// DATOS — TheSportsDB (key gratuita '123', CORS abierto, sin backend).
+// OJO: la key vieja de test '3' limita a mano varios endpoints "de
+// lista" (lookuptable.php, eventsseason.php) a 5 filas siempre, sin
+// avisar — con '123' eventsseason.php/eventsround.php ya no tienen
+// ese techo (comprobado a mano), por eso la tabla de posiciones de
+// las ligas "todos contra todos" se arma acá abajo con los propios
+// partidos de la temporada en vez de lookuptable.php (que sigue
+// devolviendo solo 5 filas en cualquier key del nivel gratuito).
 // ═══════════════════════════════════════════════════════════════
-const TSDB='https://www.thesportsdb.com/api/v1/json/3';
+const TSDB='https://www.thesportsdb.com/api/v1/json/123';
 async function fetchJSON(url,timeoutMs){
   const ctrl=new AbortController();
   const t=setTimeout(()=>ctrl.abort(), timeoutMs||9000);
@@ -390,12 +419,58 @@ async function obtenerTemporada(idLiga){
   _temporadaCache[idLiga]=temp;
   return temp;
 }
+function calcularTablaTemporada(eventos){
+  const stats={};
+  eventos.forEach(ev=>{
+    if(ev.intHomeScore==null||ev.intHomeScore===''||ev.intAwayScore==null||ev.intAwayScore==='') return;
+    const gh=parseInt(ev.intHomeScore,10), ga=parseInt(ev.intAwayScore,10);
+    if(isNaN(gh)||isNaN(ga)) return;
+    [[ev.idHomeTeam,ev.strHomeTeam,ev.strHomeTeamBadge,gh,ga],[ev.idAwayTeam,ev.strAwayTeam,ev.strAwayTeamBadge,ga,gh]].forEach(row=>{
+      const [id,nombre,badge,gf,gc]=row;
+      if(!id) return;
+      if(!stats[id]) stats[id]={idTeam:id,strTeam:nombre,strBadge:badge||'',intPlayed:0,pg:0,pe:0,pp:0,gf:0,gc:0};
+      const s=stats[id];
+      s.intPlayed++; s.gf+=gf; s.gc+=gc;
+      if(!s.strBadge&&badge) s.strBadge=badge;
+      if(gf>gc) s.pg++; else if(gf===gc) s.pe++; else s.pp++;
+    });
+  });
+  return Object.values(stats)
+    .map(s=>({idTeam:s.idTeam,strTeam:s.strTeam,strBadge:s.strBadge,intPlayed:s.intPlayed,intGoalDifference:s.gf-s.gc,intPoints:s.pg*3+s.pe}))
+    .sort((a,b)=>b.intPoints-a.intPoints||b.intGoalDifference-a.intGoalDifference)
+    .map((row,i)=>Object.assign(row,{intRank:i+1}));
+}
+let _tablaParcial={};
 async function obtenerTabla(idLiga,forzar){
   if(_tablaCache[idLiga]&&!forzar) return _tablaCache[idLiga];
+  const liga=ligaInfo(idLiga);
   const temp=await obtenerTemporada(idLiga);
-  const data=await fetchJSON(TSDB+'/lookuptable.php?l='+idLiga+'&s='+temp);
-  const tabla=(data&&data.table)||null;
+  let tabla=null, parcial=false;
+  if(liga.tipo==='liga'){
+    // La API gratuita recorta lookuptable.php a 5 equipos siempre. Para
+    // compensar armamos también una tabla propia con los partidos de la
+    // temporada (eventsseason.php, sin ese recorte) — pero en algunas
+    // ligas (Argentina en particular) ese feed de partidos viene
+    // desactualizado aunque la tabla oficial sí esté al día. Por eso
+    // comparamos "partidos jugados" de las dos fuentes y usamos la que
+    // tenga más partidos reales cargados.
+    const [eventos,data]=await Promise.all([
+      obtenerFixtures(idLiga,forzar),
+      fetchJSON(TSDB+'/lookuptable.php?l='+idLiga+'&s='+temp)
+    ]);
+    const oficial=(data&&data.table&&data.table.length)?data.table:null;
+    const computada=calcularTablaTemporada(eventos);
+    const maxOficial=oficial?Math.max(...oficial.map(r=>parseInt(r.intPlayed,10)||0)):0;
+    const maxComputada=computada.length?Math.max(...computada.map(r=>r.intPlayed)):0;
+    if(computada.length&&maxComputada>=maxOficial){ tabla=computada; }
+    else if(oficial){ tabla=oficial; parcial=true; }
+    else if(computada.length){ tabla=computada; }
+  } else {
+    const data=await fetchJSON(TSDB+'/lookuptable.php?l='+idLiga+'&s='+temp);
+    tabla=(data&&data.table&&data.table.length)?data.table:null;
+  }
   _tablaCache[idLiga]=tabla;
+  _tablaParcial[idLiga]=parcial;
   return tabla;
 }
 async function obtenerFixtures(idLiga,forzar){
@@ -519,11 +594,14 @@ async function renderPosiciones(){
   wrap.innerHTML='<div style="font-size:12px;color:var(--text3);padding:8px 0">Cargando...</div>';
   const tabla=await obtenerTabla(_posLigaId);
   if(!tabla||!tabla.length){ wrap.innerHTML='<div class="aviso-box">Sin tabla disponible para esta liga/competencia (algunas, como la Champions League en fase de grupos/knockout, no tienen una tabla de posiciones única).</div>'; return; }
-  wrap.innerHTML='<div class="tabla-wrap"><table class="tabla"><thead><tr><th>#</th><th>Equipo</th><th>PJ</th><th>DG</th><th>Pts</th></tr></thead><tbody>'+
+  let html='';
+  if(_tablaParcial[_posLigaId]) html+='<div class="aviso-box" style="margin-bottom:8px">Mostrando solo el Top '+tabla.length+' — la API gratuita todavía no tiene cargado el fixture completo de esta competencia para calcular la tabla entera acá.</div>';
+  html+='<div class="tabla-wrap"><table class="tabla"><thead><tr><th>#</th><th>Equipo</th><th>PJ</th><th>DG</th><th>Pts</th></tr></thead><tbody>'+
     tabla.map(row=>
       '<tr onclick="abrirEquipoDetalle(\''+row.idTeam+'\')" style="cursor:pointer"><td class="rank">'+row.intRank+'</td><td class="equipo-td">'+(row.strBadge?'<img class="tabla-escudo" src="'+row.strBadge+'">':'')+'<span>'+esc(row.strTeam)+'</span></td><td>'+row.intPlayed+'</td><td>'+row.intGoalDifference+'</td><td style="font-weight:800">'+row.intPoints+'</td></tr>'
     ).join('')+
   '</tbody></table></div>';
+  wrap.innerHTML=html;
 }
 
 function renderMas(){
@@ -567,9 +645,9 @@ function renderPartidoModal(ev){
   const hs=(ev.intHomeScore!=null&&ev.intHomeScore!=='')?ev.intHomeScore:'-';
   const as=(ev.intAwayScore!=null&&ev.intAwayScore!=='')?ev.intAwayScore:'-';
   let html='<div class="card" style="display:flex;align-items:center;justify-content:space-around;text-align:center">'+
-    '<div class="equipo-mini" style="cursor:pointer" onclick="cerrarModal(\'partido\');abrirEquipoDetalle(\''+ev.idHomeTeam+'\')">'+(ev.strHomeTeamBadge?'<img class="equipo-escudo" style="width:44px;height:44px" src="'+ev.strHomeTeamBadge+'">':'')+'<div class="equipo-nombre" style="font-size:13px">'+esc(ev.strHomeTeam)+'</div></div>'+
+    '<div class="equipo-mini" style="cursor:pointer" onclick="irAModal(()=>abrirEquipoDetalle(\''+ev.idHomeTeam+'\'))">'+(ev.strHomeTeamBadge?'<img class="equipo-escudo" style="width:44px;height:44px" src="'+ev.strHomeTeamBadge+'">':'')+'<div class="equipo-nombre" style="font-size:13px">'+esc(ev.strHomeTeam)+'</div></div>'+
     '<div class="marcador-centro"><div class="marcador-num" style="font-size:30px">'+hs+' - '+as+'</div><div style="font-size:11px;color:var(--text3);margin-top:4px">'+esc(ev.strStatus||'')+(ev.strProgress?" · "+esc(ev.strProgress)+"'":'')+'</div></div>'+
-    '<div class="equipo-mini" style="cursor:pointer" onclick="cerrarModal(\'partido\');abrirEquipoDetalle(\''+ev.idAwayTeam+'\')">'+(ev.strAwayTeamBadge?'<img class="equipo-escudo" style="width:44px;height:44px" src="'+ev.strAwayTeamBadge+'">':'')+'<div class="equipo-nombre" style="font-size:13px">'+esc(ev.strAwayTeam)+'</div></div>'+
+    '<div class="equipo-mini" style="cursor:pointer" onclick="irAModal(()=>abrirEquipoDetalle(\''+ev.idAwayTeam+'\'))">'+(ev.strAwayTeamBadge?'<img class="equipo-escudo" style="width:44px;height:44px" src="'+ev.strAwayTeamBadge+'">':'')+'<div class="equipo-nombre" style="font-size:13px">'+esc(ev.strAwayTeam)+'</div></div>'+
   '</div>';
   html+='<div class="aviso-box" style="margin-bottom:10px">'+esc(ev.strLeague||'')+(ev.dateEvent?' · '+fmtFechaLarga(ev.dateEvent):'')+(ev.strTime?' '+fmtHora(ev.strTime):'')+(ev.strVenue?' · '+esc(ev.strVenue):'')+'</div>';
   html+='<div class="section-title">Goles</div><div id="pt-video">Buscando video...</div>';
@@ -611,15 +689,89 @@ async function abrirEquipoDetalle(idTeam){
   proximos.forEach(registrarEvento); ultimos.forEach(registrarEvento);
   _eqActualId=idTeam; _eqActualNombre=info?info.strTeam:''; _eqActualEscudo=(info&&info.strTeamBadge)||'';
   renderEquipoModal(info,proximos,ultimos,idTeam);
+  if(info&&info.idLeague){
+    const temporada=await obtenerFixtures(info.idLeague);
+    temporada.forEach(registrarEvento);
+    if(_eqActualId===idTeam) renderEquipoEstadisticas(idTeam,info,temporada);
+  } else {
+    const st=document.getElementById('eq-stats');
+    if(st) st.innerHTML='';
+  }
 }
 function renderEquipoModal(info,proximos,ultimos,idTeam){
   const fav=esFavorito(idTeam);
   let html='<div class="equipo-header">'+(info&&info.strTeamBadge?'<img src="'+info.strTeamBadge+'">':'')+
     '<div><div class="header-title" style="margin-bottom:0">'+esc(info?info.strTeam:'Equipo')+'</div><div class="header-sub">'+esc(info?info.strLeague:'')+'</div></div></div>';
   html+='<button class="btn-primary" style="background:'+(fav?'var(--gold)':'var(--accent)')+'" onclick="toggleFavoritoActual()">'+(fav?'⭐ Sacar de favoritos':'☆ Agregar a favoritos')+'</button>';
+  html+='<div id="eq-stats"><div style="font-size:12px;color:var(--text3);padding:8px 0">Cargando estadísticas de la temporada...</div></div>';
   html+='<div class="section-title">Próximos partidos</div><div class="card" style="padding:4px 10px">'+(proximos.length?proximos.map(ev=>partidoCardHtml(ev,false)).join(''):'<div style="font-size:12px;color:var(--text3);padding:8px 0">Sin próximos partidos.</div>')+'</div>';
   html+='<div class="section-title">Últimos resultados</div><div class="card" style="padding:4px 10px">'+(ultimos.length?ultimos.map(ev=>partidoCardHtml(ev,false)).join(''):'<div style="font-size:12px;color:var(--text3);padding:8px 0">Sin resultados recientes.</div>')+'</div>';
   document.getElementById('eq-contenido').innerHTML=html;
+}
+
+// ─── Estadísticas de temporada: racha, tabla de stats y gráfico de
+// puntos acumulados (todo calculado en el cliente a partir de los
+// eventos de la competencia principal del equipo, sin backend). ───
+function calcularStatsTemporada(idTeam,eventos){
+  const partidos=eventos.filter(e=>(e.idHomeTeam===idTeam||e.idAwayTeam===idTeam)&&e.intHomeScore!=null&&e.intHomeScore!==''&&e.intAwayScore!=null&&e.intAwayScore!=='');
+  partidos.sort((a,b)=>(a.dateEvent+(a.strTime||'')).localeCompare(b.dateEvent+(b.strTime||'')));
+  let pg=0,pe=0,pp=0,gf=0,gc=0,pts=0;
+  const puntosAcum=[],colores=[],resultados=[];
+  partidos.forEach(ev=>{
+    const esLocal=ev.idHomeTeam===idTeam;
+    const gh=parseInt(ev.intHomeScore,10), ga=parseInt(ev.intAwayScore,10);
+    const gPropio=esLocal?gh:ga, gRival=esLocal?ga:gh;
+    gf+=gPropio; gc+=gRival;
+    let r;
+    if(gPropio>gRival){ pg++; pts+=3; r='V'; }
+    else if(gPropio===gRival){ pe++; pts+=1; r='E'; }
+    else { pp++; r='D'; }
+    resultados.push({ev,r,gPropio,gRival,esLocal});
+    puntosAcum.push(pts);
+    colores.push(r==='V'?'#3ddc84':r==='E'?'#66748f':'#f66a6a');
+  });
+  return {partidos:partidos.length,pg,pe,pp,gf,gc,dg:gf-gc,pts,resultados,puntosAcum,colores};
+}
+function sparklineSVG(valores,colores,w,h){
+  w=w||300; h=h||90;
+  const pad=10;
+  if(valores.length<2){
+    return '<div style="font-size:12px;color:var(--text3);padding:8px 0">Hacen falta al menos 2 partidos jugados para graficar la evolución.</div>';
+  }
+  const min=Math.min(...valores), max=Math.max(...valores), rango=(max-min)||1;
+  const stepX=(w-2*pad)/(valores.length-1);
+  const pts=valores.map((v,i)=>[pad+i*stepX, h-pad-((v-min)/rango)*(h-2*pad)]);
+  const path='M'+pts.map(p=>p[0].toFixed(1)+','+p[1].toFixed(1)).join(' L');
+  const area=path+' L'+pts[pts.length-1][0].toFixed(1)+','+(h-pad)+' L'+pts[0][0].toFixed(1)+','+(h-pad)+' Z';
+  const dots=pts.map((p,i)=>'<circle cx="'+p[0].toFixed(1)+'" cy="'+p[1].toFixed(1)+'" r="3.4" fill="'+((colores&&colores[i])||'#3b9eff')+'"/>').join('');
+  return '<svg viewBox="0 0 '+w+' '+h+'" width="100%" height="'+h+'" preserveAspectRatio="none" style="display:block">'+
+    '<defs><linearGradient id="eqLineGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#3b9eff" stop-opacity=".35"/><stop offset="100%" stop-color="#3b9eff" stop-opacity="0"/></linearGradient></defs>'+
+    '<path d="'+area+'" fill="url(#eqLineGrad)" stroke="none"/>'+
+    '<path d="'+path+'" fill="none" stroke="#3b9eff" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>'+
+    dots+
+  '</svg>';
+}
+function eqStatBox(val,label){ return '<div><div style="font-size:17px;font-weight:900">'+val+'</div><div style="font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.3px;margin-top:2px">'+esc(label)+'</div></div>'; }
+function renderEquipoEstadisticas(idTeam,info,temporada){
+  const wrap=document.getElementById('eq-stats');
+  if(!wrap) return;
+  const st=calcularStatsTemporada(idTeam,temporada);
+  if(!st.partidos){ wrap.innerHTML='<div class="section-title">📊 Temporada</div><div class="aviso-box">Sin partidos con resultado cargados todavía para '+esc(info.strLeague||'esta competencia')+'.</div>'; return; }
+  const racha=st.resultados.slice(-8).reverse();
+  let html='<div class="section-title">📊 Temporada · '+esc(info.strLeague||'')+'</div>';
+  html+='<div class="card" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;text-align:center">'+
+    eqStatBox(st.partidos,'PJ')+eqStatBox(st.pg,'PG')+eqStatBox(st.pe,'PE')+eqStatBox(st.pp,'PP')+
+    eqStatBox(st.gf,'GF')+eqStatBox(st.gc,'GC')+eqStatBox((st.dg>0?'+':'')+st.dg,'DG')+eqStatBox(st.pts,'Pts')+
+  '</div>';
+  html+='<div class="section-title">Racha reciente</div>';
+  html+='<div class="card" style="display:flex;gap:6px;flex-wrap:wrap">'+racha.map(r=>{
+    const rival=r.esLocal?r.ev.strAwayTeam:r.ev.strHomeTeam;
+    const tit=fmtFechaCorta(r.ev.dateEvent)+' · '+r.gPropio+'-'+r.gRival+' vs '+(rival||'');
+    return '<div title="'+esc(tit)+'" style="width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;color:#04152b;background:'+(r.r==='V'?'var(--green)':r.r==='E'?'var(--text3)':'var(--red)')+'">'+r.r+'</div>';
+  }).join('')+'</div>';
+  html+='<div class="section-title">Evolución de puntos</div>';
+  html+='<div class="card">'+sparklineSVG(st.puntosAcum,st.colores)+'<div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text3);margin-top:4px"><span>Fecha 1</span><span>Fecha '+st.partidos+'</span></div></div>';
+  wrap.innerHTML=html;
 }
 async function toggleFavoritoActual(){
   if(!_eqActualId) return;
@@ -645,7 +797,7 @@ async function buscarEquipoUI(){
   const soloFutbol=equipos.filter(t=>t.strSport==='Soccer').slice(0,15);
   if(!soloFutbol.length){ el.innerHTML='<div style="font-size:12px;color:var(--text3);padding:8px 0">Sin resultados.</div>'; return; }
   el.innerHTML=soloFutbol.map(t=>
-    '<div class="row-item" onclick="cerrarModal(\'buscar\');abrirEquipoDetalle(\''+t.idTeam+'\')">'+
+    '<div class="row-item" onclick="irAModal(()=>abrirEquipoDetalle(\''+t.idTeam+'\'))">'+
       (t.strTeamBadge?'<img class="equipo-escudo" src="'+t.strTeamBadge+'">':'<div class="btn-icon">⚽</div>')+
       '<div style="flex:1"><div class="row-title">'+esc(t.strTeam)+'</div><div class="row-sub">'+esc(t.strLeague||'')+'</div></div>'+
     '</div>'
