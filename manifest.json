@@ -1,0 +1,14 @@
+{
+  "name": "Frigurso Fútbol",
+  "short_name": "Fútbol",
+  "description": "Resultados, partidos en vivo, tablas de posiciones y goles en video de las principales ligas y del fútbol argentino",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#0a1120",
+  "theme_color": "#0a1120",
+  "orientation": "any",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
