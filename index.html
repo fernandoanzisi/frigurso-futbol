@@ -195,10 +195,22 @@
 <div class="page" id="page-resultados">
   <div class="header-title">📅 Resultados</div>
   <div class="pill-sel" id="res-liga-pills" style="margin-top:10px"></div>
-  <div class="section-title">Próximos</div>
-  <div class="card" id="res-proximos-card" style="padding:4px 10px"></div>
-  <div class="section-title">Resultados recientes</div>
-  <div class="card" id="res-pasados-card" style="padding:4px 10px"></div>
+  <div style="display:flex;gap:8px;margin:10px 0 4px">
+    <input type="text" class="input" id="res-buscar-equipo" style="flex:1;min-width:0" placeholder="🔎 Buscar equipo en esta competencia..." oninput="onResBuscarEquipo()">
+    <input type="date" class="input" id="res-fecha" style="max-width:148px;flex-shrink:0" onchange="onResFecha()">
+  </div>
+  <div id="res-fecha-chip" style="display:none;margin-bottom:8px"></div>
+
+  <div id="res-lista-busqueda" style="display:none">
+    <div class="section-title" id="res-busqueda-title">Resultados</div>
+    <div class="card" id="res-busqueda-card" style="padding:4px 10px"></div>
+  </div>
+  <div id="res-lista-normal">
+    <div class="section-title">Próximos</div>
+    <div class="card" id="res-proximos-card" style="padding:4px 10px"></div>
+    <div class="section-title">Resultados recientes</div>
+    <div class="card" id="res-pasados-card" style="padding:4px 10px"></div>
+  </div>
 </div>
 
 <!-- ══════════ POSICIONES ══════════ -->
@@ -505,6 +517,56 @@ async function obtenerUltimosEquipo(idTeam){
   return (data&&data.results)||[];
 }
 function fechaHoyISO(){ const n=new Date(); return n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0')+'-'+String(n.getDate()).padStart(2,'0'); }
+function normTxt(s){ return String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase(); }
+
+// ═══════════════════════════════════════════════════════════════
+// POOL DE PARTIDOS DE UNA LIGA — eventsseason.php (el fixture de toda
+// la temporada) puede venir atrasado en algunas ligas: comprobado a
+// mano que en Argentina y Brasil el propio partido más reciente (real,
+// de hoy) NO estaba en ese fixture aunque la tabla de posiciones sí
+// lo tenía contado. (Se probó primero completar esto con
+// eventsday.php, pero esa ruta resultó no confiable en el nivel
+// gratuito: para una fecha con partidos reales de sobra devolvía 2 o 3
+// partidos de una liga menor de USA sin ningún patrón — se abandonó.)
+//
+// La combinación que sí se comprobó exacta a mano: eventspastleague.php
+// / eventsnextleague.php devuelven el ÚLTIMO partido real jugado / el
+// PRÓXIMO real de la liga (uno solo, pero siempre correcto y al día) —
+// se usa el número de fecha (intRound) de esos dos partidos para
+// después pedir esa fecha completa con eventsround.php (esa sí trae
+// TODOS los partidos de esa fecha, sin recorte). El pool de una liga
+// es la unión de eso con el fixture de temporada — nunca da menos de
+// lo que ya había antes, y agrega lo más reciente cuando el fixture
+// de temporada está atrasado.
+// ═══════════════════════════════════════════════════════════════
+let _poolLigaCache={};
+async function obtenerPoolLiga(idLiga,forzar){
+  if(_poolLigaCache[idLiga]&&!forzar) return _poolLigaCache[idLiga];
+  const [temporada,ultimo,proximo]=await Promise.all([
+    obtenerFixtures(idLiga,forzar),
+    fetchJSON(TSDB+'/eventspastleague.php?id='+idLiga),
+    fetchJSON(TSDB+'/eventsnextleague.php?id='+idLiga)
+  ]);
+  const evUltimo=ultimo&&ultimo.events&&ultimo.events[0];
+  const evProximo=proximo&&proximo.events&&proximo.events[0];
+  const rondas=new Set();
+  if(evUltimo&&evUltimo.intRound) rondas.add(evUltimo.intRound+'|'+(evUltimo.strSeason||''));
+  if(evProximo&&evProximo.intRound) rondas.add(evProximo.intRound+'|'+(evProximo.strSeason||''));
+  const extra=[];
+  await Promise.all([...rondas].map(async clave=>{
+    const [r,s]=clave.split('|');
+    const data=await fetchJSON(TSDB+'/eventsround.php?id='+idLiga+'&r='+r+'&s='+(s||await obtenerTemporada(idLiga)));
+    if(data&&data.events) extra.push(...data.events);
+  }));
+  const vistos=new Set();
+  const pool=temporada.concat(extra).filter(e=>{
+    if(!e||!e.idEvent||vistos.has(e.idEvent)) return false;
+    vistos.add(e.idEvent); return true;
+  });
+  pool.forEach(registrarEvento);
+  _poolLigaCache[idLiga]=pool;
+  return pool;
+}
 
 // ═══════════════════════════════════════════════════════════════
 // RENDER — tarjeta de partido reutilizable en todas las pantallas
@@ -553,7 +615,7 @@ async function renderHome(){
     const listas=await Promise.all(DB.equiposFavoritos.slice(0,6).map(t=>obtenerProximosEquipo(t.idTeam)));
     listas.forEach(l=>proximos.push(...l));
   } else {
-    const listas=await Promise.all(LIGAS.slice(0,3).map(l=>obtenerFixtures(l.id)));
+    const listas=await Promise.all(LIGAS.slice(0,3).map(l=>obtenerPoolLiga(l.id)));
     const hoy=fechaHoyISO();
     listas.forEach(evs=>{ proximos.push(...evs.filter(e=>e.dateEvent>=hoy&&(!e.strStatus||e.strStatus==='NS'))); });
   }
@@ -564,22 +626,55 @@ async function renderHome(){
   subEl.textContent='Actualizado '+new Date().toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'});
 }
 
-let _resLigaId='4406';
+let _resLigaId='4406', _resBusqueda='', _resFechaSel='';
 function renderResLigaPills(){
   document.getElementById('res-liga-pills').innerHTML=LIGAS.map(l=>
     '<button type="button" class="pill '+(l.id===_resLigaId?'sel':'')+'" onclick="_resLigaId=\''+l.id+'\';renderResultados()">'+l.pais+' '+esc(l.nombre)+'</button>'
   ).join('');
 }
+let _resBuscarT;
+function onResBuscarEquipo(){
+  clearTimeout(_resBuscarT);
+  _resBuscarT=setTimeout(()=>{ _resBusqueda=document.getElementById('res-buscar-equipo').value.trim(); renderResultados(); },350);
+}
+function onResFecha(){ _resFechaSel=document.getElementById('res-fecha').value||''; renderResultados(); }
+function limpiarResFecha(){ _resFechaSel=''; document.getElementById('res-fecha').value=''; renderResultados(); }
 async function renderResultados(){
   renderResLigaPills();
+  const modoBusqueda=!!_resBusqueda||!!_resFechaSel;
+  document.getElementById('res-lista-busqueda').style.display=modoBusqueda?'':'none';
+  document.getElementById('res-lista-normal').style.display=modoBusqueda?'none':'';
+  const chip=document.getElementById('res-fecha-chip');
+  if(_resFechaSel){ chip.style.display=''; chip.innerHTML='<button type="button" class="pill sel" onclick="limpiarResFecha()">📅 '+fmtFechaLarga(_resFechaSel)+'  ✕</button>'; }
+  else chip.style.display='none';
+
+  if(modoBusqueda){
+    const card=document.getElementById('res-busqueda-card');
+    card.innerHTML='<div style="font-size:12px;color:var(--text3);padding:8px 0">Buscando...</div>';
+    let eventos=await obtenerPoolLiga(_resLigaId);
+    if(_resFechaSel) eventos=eventos.filter(e=>e.dateEvent===_resFechaSel);
+    if(_resBusqueda){
+      const q=normTxt(_resBusqueda);
+      eventos=eventos.filter(e=>normTxt(e.strHomeTeam).indexOf(q)>=0||normTxt(e.strAwayTeam).indexOf(q)>=0);
+    }
+    eventos=eventos.slice().sort((a,b)=>(b.dateEvent+(b.strTime||'')).localeCompare(a.dateEvent+(a.strTime||''))).slice(0,30);
+    const nombreLiga=ligaInfo(_resLigaId).nombre;
+    document.getElementById('res-busqueda-title').textContent=
+      _resBusqueda&&_resFechaSel ? ('"'+_resBusqueda+'" · '+fmtFechaLarga(_resFechaSel)) :
+      _resBusqueda ? ('Resultados de "'+_resBusqueda+'" en '+nombreLiga) :
+      ('Partidos del '+fmtFechaLarga(_resFechaSel)+' · '+nombreLiga);
+    card.innerHTML=eventos.length?eventos.map(ev=>partidoCardHtml(ev,false)).join(''):'<div class="empty"><div class="empty-icon">🔎</div><div class="empty-text">Sin partidos encontrados</div><div class="empty-sub">Busca dentro de "'+esc(nombreLiga)+'" — probá otra fecha, otro nombre, o cambiá de competencia arriba.</div></div>';
+    return;
+  }
+
   document.getElementById('res-proximos-card').innerHTML='<div style="font-size:12px;color:var(--text3);padding:8px 0">Cargando...</div>';
   document.getElementById('res-pasados-card').innerHTML='';
-  const eventos=await obtenerFixtures(_resLigaId);
   const hoy=fechaHoyISO();
-  const proximos=eventos.filter(e=>e.dateEvent>=hoy).sort((a,b)=>a.dateEvent.localeCompare(b.dateEvent)).slice(0,10);
-  const pasados=eventos.filter(e=>e.dateEvent<hoy).sort((a,b)=>b.dateEvent.localeCompare(a.dateEvent)).slice(0,10);
+  const eventosLiga=await obtenerPoolLiga(_resLigaId);
+  const proximos=eventosLiga.filter(e=>e.dateEvent>=hoy).sort((a,b)=>(a.dateEvent+(a.strTime||'')).localeCompare(b.dateEvent+(b.strTime||''))).slice(0,10);
+  const pasados=eventosLiga.filter(e=>e.dateEvent<hoy).sort((a,b)=>(b.dateEvent+(b.strTime||'')).localeCompare(a.dateEvent+(a.strTime||''))).slice(0,15);
   document.getElementById('res-proximos-card').innerHTML=proximos.length?proximos.map(ev=>partidoCardHtml(ev,false)).join(''):'<div style="font-size:12px;color:var(--text3);padding:8px 0">Sin próximos partidos cargados todavía.</div>';
-  document.getElementById('res-pasados-card').innerHTML=pasados.length?pasados.map(ev=>partidoCardHtml(ev,false)).join(''):'<div style="font-size:12px;color:var(--text3);padding:8px 0">Sin resultados recientes.</div>';
+  document.getElementById('res-pasados-card').innerHTML=pasados.length?pasados.map(ev=>partidoCardHtml(ev,false)).join(''):'<div style="font-size:12px;color:var(--text3);padding:8px 0">Sin resultados recientes cargados todavía.</div>';
 }
 
 let _posLigaId='4406';

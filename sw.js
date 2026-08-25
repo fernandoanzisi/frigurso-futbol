@@ -1,4 +1,4 @@
-const CACHE = 'futbol-v2';
+const CACHE = 'futbol-v3';
 const PRECACHE = ['./', './index.html', './manifest.json'];
 
 self.addEventListener('install', e => {
