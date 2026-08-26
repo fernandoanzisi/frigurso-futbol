@@ -517,6 +517,13 @@ async function obtenerUltimosEquipo(idTeam){
   return (data&&data.results)||[];
 }
 function fechaHoyISO(){ const n=new Date(); return n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0')+'-'+String(n.getDate()).padStart(2,'0'); }
+// TheSportsDB devuelve dateEvent/strTime en UTC y dateEventLocal/strTimeLocal
+// en el huso horario de la cancha (que para el fútbol argentino coincide con
+// el del usuario). Usar el campo UTC directo hacía que partidos nocturnos
+// (ej. 21:30 ART = 00:30 UTC del día siguiente) aparecieran fechados un día
+// después del real. Estos helpers centralizan cuál campo usar en toda la app.
+function evFecha(ev){ return (ev&&(ev.dateEventLocal||ev.dateEvent))||''; }
+function evHora(ev){ return (ev&&(ev.strTimeLocal||ev.strTime))||''; }
 function normTxt(s){ return String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase(); }
 
 // ═══════════════════════════════════════════════════════════════
@@ -577,7 +584,7 @@ function estadoPartido(ev,esVivo){
   if(esVivo) return {texto:(ev.strProgress?ev.strProgress+"'":'')+(ev.strStatus?' '+ev.strStatus:'')||'EN VIVO', clase:'vivo'};
   const tieneResultado=ev.intHomeScore!=null&&ev.intHomeScore!=='';
   if(ev.strStatus==='FT'||tieneResultado) return {texto:'Finalizado', clase:'ft'};
-  return {texto:fmtFechaCorta(ev.dateEvent)+' '+fmtHora(ev.strTime||ev.strTimeLocal||''), clase:'proximo'};
+  return {texto:fmtFechaCorta(evFecha(ev))+' '+fmtHora(evHora(ev)), clase:'proximo'};
 }
 function partidoCardHtml(ev,esVivo){
   registrarEvento(ev);
@@ -617,9 +624,9 @@ async function renderHome(){
   } else {
     const listas=await Promise.all(LIGAS.slice(0,3).map(l=>obtenerPoolLiga(l.id)));
     const hoy=fechaHoyISO();
-    listas.forEach(evs=>{ proximos.push(...evs.filter(e=>e.dateEvent>=hoy&&(!e.strStatus||e.strStatus==='NS'))); });
+    listas.forEach(evs=>{ proximos.push(...evs.filter(e=>evFecha(e)>=hoy&&(!e.strStatus||e.strStatus==='NS'))); });
   }
-  proximos.sort((a,b)=>(a.dateEvent+(a.strTime||'')).localeCompare(b.dateEvent+(b.strTime||'')));
+  proximos.sort((a,b)=>(evFecha(a)+evHora(a)).localeCompare(evFecha(b)+evHora(b)));
   proximos=proximos.slice(0,8);
   proxCard.innerHTML=proximos.length?proximos.map(ev=>partidoCardHtml(ev,false)).join(''):'<div style="font-size:12px;color:var(--text3);padding:8px 0">Sin próximos partidos encontrados.</div>';
 
@@ -652,12 +659,12 @@ async function renderResultados(){
     const card=document.getElementById('res-busqueda-card');
     card.innerHTML='<div style="font-size:12px;color:var(--text3);padding:8px 0">Buscando...</div>';
     let eventos=await obtenerPoolLiga(_resLigaId);
-    if(_resFechaSel) eventos=eventos.filter(e=>e.dateEvent===_resFechaSel);
+    if(_resFechaSel) eventos=eventos.filter(e=>evFecha(e)===_resFechaSel);
     if(_resBusqueda){
       const q=normTxt(_resBusqueda);
       eventos=eventos.filter(e=>normTxt(e.strHomeTeam).indexOf(q)>=0||normTxt(e.strAwayTeam).indexOf(q)>=0);
     }
-    eventos=eventos.slice().sort((a,b)=>(b.dateEvent+(b.strTime||'')).localeCompare(a.dateEvent+(a.strTime||''))).slice(0,30);
+    eventos=eventos.slice().sort((a,b)=>(evFecha(b)+evHora(b)).localeCompare(evFecha(a)+evHora(a))).slice(0,30);
     const nombreLiga=ligaInfo(_resLigaId).nombre;
     document.getElementById('res-busqueda-title').textContent=
       _resBusqueda&&_resFechaSel ? ('"'+_resBusqueda+'" · '+fmtFechaLarga(_resFechaSel)) :
@@ -671,8 +678,8 @@ async function renderResultados(){
   document.getElementById('res-pasados-card').innerHTML='';
   const hoy=fechaHoyISO();
   const eventosLiga=await obtenerPoolLiga(_resLigaId);
-  const proximos=eventosLiga.filter(e=>e.dateEvent>=hoy).sort((a,b)=>(a.dateEvent+(a.strTime||'')).localeCompare(b.dateEvent+(b.strTime||''))).slice(0,10);
-  const pasados=eventosLiga.filter(e=>e.dateEvent<hoy).sort((a,b)=>(b.dateEvent+(b.strTime||'')).localeCompare(a.dateEvent+(a.strTime||''))).slice(0,15);
+  const proximos=eventosLiga.filter(e=>evFecha(e)>=hoy).sort((a,b)=>(evFecha(a)+evHora(a)).localeCompare(evFecha(b)+evHora(b))).slice(0,10);
+  const pasados=eventosLiga.filter(e=>evFecha(e)<hoy).sort((a,b)=>(evFecha(b)+evHora(b)).localeCompare(evFecha(a)+evHora(a))).slice(0,15);
   document.getElementById('res-proximos-card').innerHTML=proximos.length?proximos.map(ev=>partidoCardHtml(ev,false)).join(''):'<div style="font-size:12px;color:var(--text3);padding:8px 0">Sin próximos partidos cargados todavía.</div>';
   document.getElementById('res-pasados-card').innerHTML=pasados.length?pasados.map(ev=>partidoCardHtml(ev,false)).join(''):'<div style="font-size:12px;color:var(--text3);padding:8px 0">Sin resultados recientes cargados todavía.</div>';
 }
@@ -744,7 +751,7 @@ function renderPartidoModal(ev){
     '<div class="marcador-centro"><div class="marcador-num" style="font-size:30px">'+hs+' - '+as+'</div><div style="font-size:11px;color:var(--text3);margin-top:4px">'+esc(ev.strStatus||'')+(ev.strProgress?" · "+esc(ev.strProgress)+"'":'')+'</div></div>'+
     '<div class="equipo-mini" style="cursor:pointer" onclick="irAModal(()=>abrirEquipoDetalle(\''+ev.idAwayTeam+'\'))">'+(ev.strAwayTeamBadge?'<img class="equipo-escudo" style="width:44px;height:44px" src="'+ev.strAwayTeamBadge+'">':'')+'<div class="equipo-nombre" style="font-size:13px">'+esc(ev.strAwayTeam)+'</div></div>'+
   '</div>';
-  html+='<div class="aviso-box" style="margin-bottom:10px">'+esc(ev.strLeague||'')+(ev.dateEvent?' · '+fmtFechaLarga(ev.dateEvent):'')+(ev.strTime?' '+fmtHora(ev.strTime):'')+(ev.strVenue?' · '+esc(ev.strVenue):'')+'</div>';
+  html+='<div class="aviso-box" style="margin-bottom:10px">'+esc(ev.strLeague||'')+(evFecha(ev)?' · '+fmtFechaLarga(evFecha(ev)):'')+(evHora(ev)?' '+fmtHora(evHora(ev)):'')+(ev.strVenue?' · '+esc(ev.strVenue):'')+'</div>';
   html+='<div class="section-title">Goles</div><div id="pt-video">Buscando video...</div>';
   document.getElementById('pt-contenido').innerHTML=html;
   cargarVideoPartido(ev);
@@ -809,7 +816,7 @@ function renderEquipoModal(info,proximos,ultimos,idTeam){
 // eventos de la competencia principal del equipo, sin backend). ───
 function calcularStatsTemporada(idTeam,eventos){
   const partidos=eventos.filter(e=>(e.idHomeTeam===idTeam||e.idAwayTeam===idTeam)&&e.intHomeScore!=null&&e.intHomeScore!==''&&e.intAwayScore!=null&&e.intAwayScore!=='');
-  partidos.sort((a,b)=>(a.dateEvent+(a.strTime||'')).localeCompare(b.dateEvent+(b.strTime||'')));
+  partidos.sort((a,b)=>(evFecha(a)+evHora(a)).localeCompare(evFecha(b)+evHora(b)));
   let pg=0,pe=0,pp=0,gf=0,gc=0,pts=0;
   const puntosAcum=[],colores=[],resultados=[];
   partidos.forEach(ev=>{
@@ -861,7 +868,7 @@ function renderEquipoEstadisticas(idTeam,info,temporada){
   html+='<div class="section-title">Racha reciente</div>';
   html+='<div class="card" style="display:flex;gap:6px;flex-wrap:wrap">'+racha.map(r=>{
     const rival=r.esLocal?r.ev.strAwayTeam:r.ev.strHomeTeam;
-    const tit=fmtFechaCorta(r.ev.dateEvent)+' · '+r.gPropio+'-'+r.gRival+' vs '+(rival||'');
+    const tit=fmtFechaCorta(evFecha(r.ev))+' · '+r.gPropio+'-'+r.gRival+' vs '+(rival||'');
     return '<div title="'+esc(tit)+'" style="width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;color:#04152b;background:'+(r.r==='V'?'var(--green)':r.r==='E'?'var(--text3)':'var(--red)')+'">'+r.r+'</div>';
   }).join('')+'</div>';
   html+='<div class="section-title">Evolución de puntos</div>';
