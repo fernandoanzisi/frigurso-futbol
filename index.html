@@ -231,6 +231,10 @@
       <span class="admin-menu-ic">🔎</span>
       <span class="admin-menu-txt"><span class="admin-menu-titulo">Buscar equipo</span><span class="admin-menu-sub">Para agregarlo a favoritos</span></span>
     </button>
+    <button class="admin-menu-btn" onclick="toggleNotif()">
+      <span class="admin-menu-ic">🔔</span>
+      <span class="admin-menu-txt"><span class="admin-menu-titulo" id="mas-notif-titulo">Avisarme los goles de mis favoritos</span><span class="admin-menu-sub" id="mas-notif-sub">Mientras tengas la app abierta</span></span>
+    </button>
     <button class="admin-menu-btn" onclick="actualizarTodo(true)">
       <span class="admin-menu-ic">🔄</span>
       <span class="admin-menu-txt"><span class="admin-menu-titulo">Actualizar en vivo</span><span class="admin-menu-sub" id="mas-actualizado-sub">—</span></span>
@@ -500,6 +504,67 @@ async function obtenerEnVivo(forzar){
   _liveCacheTs=Date.now();
   return _liveCache;
 }
+
+// ═══════════════════════════════════════════════════════════════
+// AVISO DE GOLES DE FAVORITOS — sondea livescore.php cada 45s (solo
+// con la pestaña visible, para no gastar batería/datos de más) y
+// compara el marcador de los partidos en vivo de equipos favoritos
+// contra la última vuelta. Es aviso "con la app abierta": push real
+// con el celular bloqueado necesitaría un backend que dispare la
+// notificación, y esta app es 100% cliente (ver aviso en "Más").
+// ═══════════════════════════════════════════════════════════════
+function notifOn(){ try{ return localStorage.getItem('ffut_notif')==='1'; }catch(e){ return false; } }
+let _pollGolesTimer=null, _marcadoresVistos=null;
+function _claveMarcador(ev){ return (ev.intHomeScore??'')+'-'+(ev.intAwayScore??''); }
+async function chequearGolesFavoritos(){
+  if(!DB.equiposFavoritos.length) return;
+  const favIds=new Set(DB.equiposFavoritos.map(t=>t.idTeam));
+  const vivos=await obtenerEnVivo(true);
+  const propios=vivos.filter(ev=>favIds.has(ev.idHomeTeam)||favIds.has(ev.idAwayTeam));
+  const esPrimeraVez=!_marcadoresVistos;
+  if(esPrimeraVez) _marcadoresVistos={};
+  propios.forEach(ev=>{
+    const clave=_claveMarcador(ev);
+    const antes=_marcadoresVistos[ev.idEvent];
+    if(!esPrimeraVez&&antes!==undefined&&antes!==clave){
+      const msg='⚽ '+ev.strHomeTeam+' '+(ev.intHomeScore??0)+'-'+(ev.intAwayScore??0)+' '+ev.strAwayTeam;
+      toast(msg);
+      if('Notification' in window&&Notification.permission==='granted'){
+        try{ new Notification('¡Gol!',{body:msg,icon:'icon-192.png'}); }catch(e){}
+      }
+    }
+    _marcadoresVistos[ev.idEvent]=clave;
+  });
+  if(_pagActual==='home') renderHome();
+}
+function iniciarPollGoles(){
+  if(_pollGolesTimer) return;
+  chequearGolesFavoritos();
+  _pollGolesTimer=setInterval(chequearGolesFavoritos,45000);
+}
+function detenerPollGoles(){ clearInterval(_pollGolesTimer); _pollGolesTimer=null; }
+document.addEventListener('visibilitychange',()=>{
+  if(document.hidden) detenerPollGoles();
+  else if(notifOn()) iniciarPollGoles();
+});
+async function toggleNotif(){
+  if(notifOn()){
+    localStorage.setItem('ffut_notif','0');
+    detenerPollGoles();
+    renderMas();
+    toast('Notificaciones de goles desactivadas');
+    return;
+  }
+  if(!('Notification' in window)){ toast('Tu navegador no soporta notificaciones'); return; }
+  let perm=Notification.permission;
+  if(perm==='default') perm=await Notification.requestPermission();
+  if(perm!=='granted'){ toast('Necesitás dar permiso de notificaciones'); return; }
+  if(!DB.equiposFavoritos.length) toast('🔔 Activado — agregá equipos favoritos para recibir avisos');
+  else toast('🔔 Te vamos a avisar los goles de tus favoritos');
+  localStorage.setItem('ffut_notif','1');
+  iniciarPollGoles();
+  renderMas();
+}
 async function buscarEquipoApi(nombre){
   const data=await fetchJSON(TSDB+'/searchteams.php?t='+encodeURIComponent(nombre));
   return (data&&data.teams)||[];
@@ -717,6 +782,8 @@ function renderMas(){
     '</div>'
   ).join(''):'<div style="font-size:12px;color:var(--text3);padding:8px 0">Sin favoritos — buscá un equipo para seguirlo.</div>';
   document.getElementById('mas-actualizado-sub').textContent=_liveCacheTs?('Última actualización: '+new Date(_liveCacheTs).toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'})):'—';
+  document.getElementById('mas-notif-titulo').textContent=notifOn()?'Avisándome los goles de mis favoritos':'Avisarme los goles de mis favoritos';
+  document.getElementById('mas-notif-sub').textContent=notifOn()?'Activado · tocá para desactivar':'Mientras tengas la app abierta';
 }
 async function quitarFavoritoDesdeMas(idTeam){
   DB.equiposFavoritos=DB.equiposFavoritos.filter(t=>t.idTeam!==idTeam);
@@ -937,6 +1004,7 @@ function iniciarApp(){
   document.getElementById('navbar').style.display='';
   navGo('home', document.getElementById('nav-home'));
   history.replaceState({page:'home'},'','');
+  if(notifOn()&&!document.hidden) iniciarPollGoles();
 }
 iniciarApp();
 </script>
